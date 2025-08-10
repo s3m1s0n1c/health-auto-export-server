@@ -1,0 +1,17 @@
+apiVersion: 1
+
+# This dashboard provisioning file tells Grafana to automatically load any
+# dashboards found in `/var/lib/grafana/dashboards`. We mount the host's
+# `dashboard-examples` directory into this path via docker‑compose. The
+# `folder` setting organizes the dashboards under a named folder in the
+# Grafana UI. The update interval defines how often Grafana will scan the
+# directory for changes.
+providers:
+  - name: apple-health-dashboards
+    orgId: 1
+    folder: Health Metrics
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards

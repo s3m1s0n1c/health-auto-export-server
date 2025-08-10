@@ -1,3 +1,5 @@
+version: '2.1'
+
 services:
   hae-mongo:
     container_name: hae-mongo
@@ -8,11 +10,12 @@ services:
     networks:
       - hae_network
     ports:
-      - "${MONGO_PORT}:27017"
+      - "${MONGO_PORT:-27017}:27017"
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
       MONGO_INITDB_DATABASE: ${MONGO_DB}
+
 
   hae-grafana:
     container_name: hae-grafana
@@ -20,13 +23,19 @@ services:
     ports:
       - 3000:3000
     volumes:
-      - ./grafana-data:/var/lib/grafana
-    # user: "0:0" # you may need to uncomment this line if using Ubuntu or if you expereince permission errors
-    restart: unless-stopped
+      - ./grafana/grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
     networks:
       - hae_network
-    depends_on:
-      - hae-mongo
+    user: "0:0" # you may need to uncomment this line if using Ubuntu or if you expereince permission errors
+    environment:
+      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=yesoreyeram-infinity-datasource
+#      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
+#      - GF_PLUGINS_PREINSTALL=yesoreyeram-infinity-datasource
+      - GF_SECURITY_ADMIN_USER=${ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    restart: unless-stopped
 
   hae-server:
     container_name: hae-server
@@ -42,6 +51,9 @@ services:
       - MONGO_DB=${MONGO_DB}
       - MONGO_USERNAME=${MONGO_USERNAME}
       - MONGO_PASSWORD=${MONGO_PASSWORD}
+      - READ_TOKEN=${READ_TOKEN}
+      - WRITE_TOKEN=${WRITE_TOKEN}
+
     depends_on:
       - hae-mongo
     networks:
@@ -54,5 +66,5 @@ networks:
 
 volumes:
   postgres-data:
-  grafana-data:
   mongodb-data:
+  grafana_data: {}
