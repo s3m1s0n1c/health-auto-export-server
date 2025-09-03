@@ -5,6 +5,14 @@ import { IngestResponse } from '../models/IngestResponse';
 import { RouteModel, WorkoutModel, mapWorkoutData, mapRoute } from '../models/Workout';
 import { filterFields, parseDate } from '../utils';
 
+/**
+ * Controller to fetch a list of workouts with optional date range filtering.
+ *
+ * This version extends the summary payload to include additional metrics
+ * requested by the API consumer.  Each summary now includes total energy,
+ * max/avg heart‑rate, distance, speed, step count and flights climbed when
+ * available.
+ */
 export const getWorkouts = async (req: Request, res: Response) => {
   try {
     const { startDate, endDate, include, exclude } = req.query;
@@ -12,10 +20,7 @@ export const getWorkouts = async (req: Request, res: Response) => {
     const fromDate = parseDate(startDate as string);
     const toDate = parseDate(endDate as string);
 
-    console.log(fromDate, toDate);
-
-    let query = {};
-
+    let query: any = {};
     if (fromDate && toDate) {
       query = {
         start: {
@@ -28,33 +33,69 @@ export const getWorkouts = async (req: Request, res: Response) => {
     const workouts = await WorkoutModel.find(query)
       .sort({ start: -1 })
       .lean()
-      .then((workouts) => {
-        const mappedWorkouts = workouts.map((workout) => {
-          const startDate = new Date(workout.start);
-          const endDate = new Date(workout.end);
+      .then((results) => {
+        // Map each raw workout document into a lightweight summary object
+        return results.map((workout: any) => {
+          const start = new Date(workout.start);
+          const end = new Date(workout.end);
 
-          const result = {
+          // Summarise step count by summing individual measurements if present
+          const totalSteps = Array.isArray(workout.stepCount)
+            ? workout.stepCount.reduce((sum: number, m: any) => sum + (m.qty || 0), 0)
+            : undefined;
+
+          // Compute totalEnergy fallback: use provided totalEnergy, then activeEnergyBurned
+          const totalEnergyVal = workout.totalEnergy?.qty ?? workout.activeEnergyBurned?.qty ?? undefined;
+
+          // Compute speed fallback: use provided speed qty or derive from distance and duration
+          let speedVal: number | undefined = undefined;
+          if (workout.speed?.qty !== undefined && workout.speed?.qty !== null) {
+            speedVal = workout.speed.qty;
+          } else if (workout.distance?.qty !== undefined && workout.duration) {
+            // duration is in seconds; compute average speed in distance units per hour
+            const durationHours = workout.duration / 3600;
+            if (durationHours > 0) {
+              speedVal = workout.distance.qty / durationHours;
+            }
+          }
+
+          const flightsVal = workout.flightsClimbed?.qty ?? undefined;
+
+          // Build the base result
+          const result: any = {
             id: workout.workoutId,
             workout_type: workout.name,
-            start_time: startDate.toISOString(),
-            end_time: endDate.toISOString(),
+            start_time: start.toISOString(),
+            end_time: end.toISOString(),
             duration_minutes: workout.duration / 60,
-            calories_burned: workout.activeEnergyBurned?.qty || null,
+            calories_burned: workout.activeEnergyBurned?.qty ?? undefined,
+            max_heart_rate: workout.maxHeartRate ?? undefined,
+            avg_heart_rate: workout.avgHeartRate ?? undefined,
+            distance: workout.distance?.qty ?? undefined,
+            step_count: totalSteps,
           };
+
+          // Conditionally add properties only if they have values
+          if (totalEnergyVal !== undefined) {
+            result.total_energy = totalEnergyVal;
+          }
+          if (speedVal !== undefined) {
+            result.speed = speedVal;
+          }
+          if (flightsVal !== undefined) {
+            result.flights_climbed = flightsVal;
+          }
 
           return result;
         });
-
-        return mappedWorkouts;
       });
 
-    // Process include/exclude filters if provided
-    let processedWorkouts = workouts;
+    // If include/exclude fields are provided, filter each summary accordingly
+    let processedWorkouts: any = workouts;
     if (include || exclude) {
-      processedWorkouts = workouts.map(workout => filterFields(workout, include, exclude));
+      processedWorkouts = workouts.map((workout: any) => filterFields(workout, include, exclude));
     }
 
-    console.log(`${workouts.length} workouts fetched`);
     res.status(200).json(processedWorkouts);
   } catch (error) {
     console.error('Error fetching workouts:', error);
@@ -62,60 +103,86 @@ export const getWorkouts = async (req: Request, res: Response) => {
   }
 };
 
+/**
+ * Controller to fetch a single workout by ID.  The returned payload
+ * consolidates heart‑rate series, route information and all available
+ * metrics defined on the Workout model, including the newly added fields
+ * such as totalEnergy, maxHeartRate, avgHeartRate, stepCadence, etc.
+ */
 export const getWorkout = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { include, exclude } = req.query;
 
-    console.log('Fetching workout details for ID:', id);
-    const workoutMetadata = await WorkoutModel.findOne({ workoutId: id })
-      .lean()
-      .then((workout) => {
-        if (!workout) {
-          return null;
-        }
-
-        const heartRateData =
-          workout.heartRateData?.map((hr) => ({
-            type: 'Heart Rate',
-            timestamp: new Date(hr.date).toISOString(),
-            value: hr.Avg,
-          })) || [];
-
-        const heartRateRecovery =
-          workout.heartRateRecovery?.map((hr) => ({
-            type: 'Heart Rate Recovery',
-            timestamp: new Date(hr.date).toISOString(),
-            value: hr.Avg,
-          })) || [];
-
-        return { heartRateData, heartRateRecovery };
-      });
-
-    if (!workoutMetadata) {
+    // Fetch the full workout document
+    const workout = await WorkoutModel.findOne({ workoutId: id }).lean();
+    if (!workout) {
       return res.status(404).json({ error: 'Workout not found' });
     }
 
+    // Transform heart rate arrays into more readable time series
+    const heartRateData = (workout.heartRateData || []).map((hr: any) => ({
+      type: 'Heart Rate',
+      timestamp: new Date(hr.date).toISOString(),
+      value: hr.Avg,
+    }));
+    const heartRateRecovery = (workout.heartRateRecovery || []).map((hr: any) => ({
+      type: 'Heart Rate Recovery',
+      timestamp: new Date(hr.date).toISOString(),
+      value: hr.Avg,
+    }));
+
+    // Fetch the associated route (if any) and include all location fields
     const route = await RouteModel.findOne({ workoutId: id })
       .lean()
-      .then((route) => {
-        return route?.locations.map((x) => {
-          return {
-            latitude: x.latitude,
-            longitude: x.longitude,
-            time: new Date(x.timestamp).toISOString(),
-          };
-        });
-      });
+      .then((r: any) =>
+        r?.locations.map((loc: any) => ({
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          time: new Date(loc.timestamp).toISOString(),
+          // include all optional fields on the location
+          course: loc.course ?? null,
+          courseAccuracy: loc.courseAccuracy ?? null,
+          speed: loc.speed ?? null,
+          speedAccuracy: loc.speedAccuracy ?? null,
+          altitude: loc.altitude ?? null,
+          verticalAccuracy: loc.verticalAccuracy ?? null,
+          horizontalAccuracy: loc.horizontalAccuracy ?? null,
+        })),
+      );
 
-    let ret = { ...workoutMetadata, route: route || [] };
+    // Build the response object including all metrics
+    let ret: any = {
+      id: workout.workoutId,
+      workout_type: workout.name,
+      start_time: new Date(workout.start).toISOString(),
+      end_time: new Date(workout.end).toISOString(),
+      duration_minutes: workout.duration / 60,
+      total_energy: workout.totalEnergy,
+      active_energy: workout.activeEnergy,
+      max_heart_rate: workout.maxHeartRate,
+      avg_heart_rate: workout.avgHeartRate,
+      step_count: workout.stepCount,
+      step_cadence: workout.stepCadence,
+      total_swimming_stroke_count: workout.totalSwimmingStrokeCount,
+      swim_cadence: workout.swimCadence,
+      distance: workout.distance,
+      speed: workout.speed,
+      flights_climbed: workout.flightsClimbed,
+      intensity: workout.intensity,
+      temperature: workout.temperature,
+      humidity: workout.humidity,
+      elevation: workout.elevation,
+      heartRateData,
+      heartRateRecovery,
+      route: route ?? [],
+    };
 
-    // Process include/exclude filters if provided
+    // Apply include/exclude filtering if requested
     if (include || exclude) {
       ret = filterFields(ret, include, exclude);
     }
 
-    console.log(`Workout ${id} fetched with ${route?.length ?? 0} locations`);
     res.status(200).json(ret);
   } catch (error) {
     console.error('Error fetching workout details:', error);
@@ -123,6 +190,13 @@ export const getWorkout = async (req: Request, res: Response) => {
   }
 };
 
+/**
+ * Controller to ingest and save a batch of workouts.  This function
+ * delegates transformation of workout data to mapWorkoutData() and
+ * automatically upserts the corresponding route documents.  It remains
+ * unchanged except for the fact that mapWorkoutData now accepts the
+ * extended WorkoutData definition.
+ */
 export const saveWorkouts = async (ingestData: IngestData): Promise<IngestResponse> => {
   try {
     const response: IngestResponse = {};
@@ -136,7 +210,7 @@ export const saveWorkouts = async (ingestData: IngestData): Promise<IngestRespon
       return response;
     }
 
-    const workoutOperations = workouts.map((workout) => {
+    const workoutOperations = workouts.map((workout: any) => {
       return {
         updateOne: {
           filter: { workoutId: workout.id },
@@ -149,9 +223,9 @@ export const saveWorkouts = async (ingestData: IngestData): Promise<IngestRespon
     });
 
     const routeOperations = workouts
-      .filter((workout) => workout.route && workout.route.length > 0)
+      .filter((workout: any) => workout.route && workout.route.length > 0)
       .map(mapRoute)
-      .map((route) => ({
+      .map((route: any) => ({
         updateOne: {
           filter: { workoutId: route.workoutId },
           update: {
@@ -170,8 +244,6 @@ export const saveWorkouts = async (ingestData: IngestData): Promise<IngestRespon
       success: true,
       message: `${workoutOperations.length} Workouts and ${routeOperations.length} Routes saved successfully`,
     };
-
-    console.debug(`Processed ${workouts.length} workouts`);
 
     return response;
   } catch (error) {

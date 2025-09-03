@@ -1,0 +1,20 @@
+{
+  "name": "file-ingester",
+  "version": "1.0.0",
+  "description": "Ingest Apple Health export XML and post to health-auto-export-server API",
+  "main": "dist/ingest-export.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/ingest-export.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "adm-zip": "^0.5.9",
+    "fast-xml-parser": "^4.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "@types/node": "^20.11.0"
+  }
+}
+

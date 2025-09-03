@@ -1,0 +1,225 @@
+import { Request, Response } from 'express';
+
+import { IngestData } from '../models/IngestData';
+import { IngestResponse } from '../models/IngestResponse';
+import { RouteModel, WorkoutModel, mapWorkoutData, mapRoute } from '../models/Workout';
+import { filterFields, parseDate } from '../utils';
+
+/**
+ * Controller to fetch a list of workouts with optional date range filtering.
+ *
+ * This version extends the summary payload to include additional metrics
+ * requested by the API consumer.  Each summary now includes total energy,
+ * max/avg heart‑rate, distance, speed, step count and flights climbed when
+ * available.
+ */
+export const getWorkouts = async (req: Request, res: Response) => {
+  try {
+    const { startDate, endDate, include, exclude } = req.query;
+
+    const fromDate = parseDate(startDate as string);
+    const toDate = parseDate(endDate as string);
+
+    let query: any = {};
+    if (fromDate && toDate) {
+      query = {
+        start: {
+          $gte: fromDate,
+          $lte: toDate,
+        },
+      };
+    }
+
+    const workouts = await WorkoutModel.find(query)
+      .sort({ start: -1 })
+      .lean()
+      .then((results) => {
+        // Map each raw workout document into a lightweight summary object
+        return results.map((workout: any) => {
+          const start = new Date(workout.start);
+          const end = new Date(workout.end);
+
+          // Summarise step count by summing individual measurements if present
+          const totalSteps = Array.isArray(workout.stepCount)
+            ? workout.stepCount.reduce((sum: number, m: any) => sum + (m.qty || 0), 0)
+            : null;
+
+          return {
+            id: workout.workoutId,
+            workout_type: workout.name,
+            start_time: start.toISOString(),
+            end_time: end.toISOString(),
+            duration_minutes: workout.duration / 60,
+            calories_burned: workout.activeEnergyBurned?.qty ?? null,
+            total_energy: workout.totalEnergy?.qty ?? null,
+            max_heart_rate: workout.maxHeartRate ?? null,
+            avg_heart_rate: workout.avgHeartRate ?? null,
+            distance: workout.distance?.qty ?? null,
+            speed: workout.speed?.qty ?? null,
+            step_count: totalSteps,
+            flights_climbed: workout.flightsClimbed?.qty ?? null,
+          };
+        });
+      });
+
+    // If include/exclude fields are provided, filter each summary accordingly
+    let processedWorkouts: any = workouts;
+    if (include || exclude) {
+      processedWorkouts = workouts.map((workout: any) => filterFields(workout, include, exclude));
+    }
+
+    res.status(200).json(processedWorkouts);
+  } catch (error) {
+    console.error('Error fetching workouts:', error);
+    res.status(500).json({ error: 'Error fetching workouts' });
+  }
+};
+
+/**
+ * Controller to fetch a single workout by ID.  The returned payload
+ * consolidates heart‑rate series, route information and all available
+ * metrics defined on the Workout model, including the newly added fields
+ * such as totalEnergy, maxHeartRate, avgHeartRate, stepCadence, etc.
+ */
+export const getWorkout = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { include, exclude } = req.query;
+
+    // Fetch the full workout document
+    const workout = await WorkoutModel.findOne({ workoutId: id }).lean();
+    if (!workout) {
+      return res.status(404).json({ error: 'Workout not found' });
+    }
+
+    // Transform heart rate arrays into more readable time series
+    const heartRateData = (workout.heartRateData || []).map((hr: any) => ({
+      type: 'Heart Rate',
+      timestamp: new Date(hr.date).toISOString(),
+      value: hr.Avg,
+    }));
+    const heartRateRecovery = (workout.heartRateRecovery || []).map((hr: any) => ({
+      type: 'Heart Rate Recovery',
+      timestamp: new Date(hr.date).toISOString(),
+      value: hr.Avg,
+    }));
+
+    // Fetch the associated route (if any) and convert timestamps
+    const route = await RouteModel.findOne({ workoutId: id })
+      .lean()
+      .then((r: any) =>
+        r?.locations.map((x: any) => ({
+          latitude: x.latitude,
+          longitude: x.longitude,
+          time: new Date(x.timestamp).toISOString(),
+        })),
+      );
+
+    // Build the response object including all metrics
+    let ret: any = {
+      id: workout.workoutId,
+      workout_type: workout.name,
+      start_time: new Date(workout.start).toISOString(),
+      end_time: new Date(workout.end).toISOString(),
+      duration_minutes: workout.duration / 60,
+      total_energy: workout.totalEnergy,
+      active_energy: workout.activeEnergy,
+      max_heart_rate: workout.maxHeartRate,
+      avg_heart_rate: workout.avgHeartRate,
+      step_count: workout.stepCount,
+      step_cadence: workout.stepCadence,
+      total_swimming_stroke_count: workout.totalSwimmingStrokeCount,
+      swim_cadence: workout.swimCadence,
+      distance: workout.distance,
+      speed: workout.speed,
+      flights_climbed: workout.flightsClimbed,
+      intensity: workout.intensity,
+      temperature: workout.temperature,
+      humidity: workout.humidity,
+      elevation: workout.elevation,
+      heartRateData,
+      heartRateRecovery,
+      route: route ?? [],
+    };
+
+    // Apply include/exclude filtering if requested
+    if (include || exclude) {
+      ret = filterFields(ret, include, exclude);
+    }
+
+    res.status(200).json(ret);
+  } catch (error) {
+    console.error('Error fetching workout details:', error);
+    res.status(500).json({ error: 'Error fetching workout details' });
+  }
+};
+
+/**
+ * Controller to ingest and save a batch of workouts.  This function
+ * delegates transformation of workout data to mapWorkoutData() and
+ * automatically upserts the corresponding route documents.  It remains
+ * unchanged except for the fact that mapWorkoutData now accepts the
+ * extended WorkoutData definition.
+ */
+export const saveWorkouts = async (ingestData: IngestData): Promise<IngestResponse> => {
+  try {
+    const response: IngestResponse = {};
+    const workouts = ingestData.data.workouts;
+
+    if (!workouts || !workouts.length) {
+      response.workouts = {
+        success: true,
+        message: 'No workout data provided',
+      };
+      return response;
+    }
+
+    const workoutOperations = workouts.map((workout: any) => {
+      return {
+        updateOne: {
+          filter: { workoutId: workout.id },
+          update: {
+            $set: mapWorkoutData(workout),
+          },
+          upsert: true,
+        },
+      };
+    });
+
+    const routeOperations = workouts
+      .filter((workout: any) => workout.route && workout.route.length > 0)
+      .map(mapRoute)
+      .map((route: any) => ({
+        updateOne: {
+          filter: { workoutId: route.workoutId },
+          update: {
+            $set: route,
+          },
+          upsert: true,
+        },
+      }));
+
+    await Promise.all([
+      WorkoutModel.bulkWrite(workoutOperations),
+      routeOperations.length > 0 ? RouteModel.bulkWrite(routeOperations) : Promise.resolve(),
+    ]);
+
+    response.workouts = {
+      success: true,
+      message: `${workoutOperations.length} Workouts and ${routeOperations.length} Routes saved successfully`,
+    };
+
+    return response;
+  } catch (error) {
+    console.error('Error processing workouts:', error);
+
+    const errorResponse: IngestResponse = {};
+    errorResponse.workouts = {
+      success: false,
+      message: 'Workouts not saved',
+      error: error instanceof Error ? error.message : 'An error occurred',
+    };
+
+    return errorResponse;
+  }
+};

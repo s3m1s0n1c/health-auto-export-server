@@ -97,7 +97,7 @@
                 "value": [
                   {
                     "title": "Set Selected Workout",
-                    "url": "/d/eedjdc3i47klcb/workout-details?var-selected_workout=${__data.fields[0]}&from=${__data.fields.Start}&to=${__data.fields.End}﻿"
+                    "url": "/d/mkdzr82q5jtlwne/workout-details?var-selected_workout=${__data.fields[0]}&from=${__data.fields.Start}&to=${__data.fields.End}﻿"
                   }
                 ]
               }

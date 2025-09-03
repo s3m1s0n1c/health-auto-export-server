@@ -30,8 +30,8 @@ services:
     user: "0:0" # you may need to uncomment this line if using Ubuntu or if you expereince permission errors
     environment:
       - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=yesoreyeram-infinity-datasource
-      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
-      - GF_PLUGINS_PREINSTALL=yesoreyeram-infinity-datasourc
+#      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
+#      - GF_PLUGINS_PREINSTALL=yesoreyeram-infinity-datasourc
       - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
       - GF_SECURITY_ADMIN_USER=${ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${ADMIN_PASSWORD}
@@ -54,6 +54,7 @@ services:
       - MONGO_PASSWORD=${MONGO_PASSWORD}
       - READ_TOKEN=${READ_TOKEN}
       - WRITE_TOKEN=${WRITE_TOKEN}
+      - DEBUG=${DEBUG}
 
     depends_on:
       - hae-mongo
@@ -61,11 +62,28 @@ services:
       - hae_network
     restart: unless-stopped
 
+
+#  hae-file-ingester:
+#      container_name: hae-file-ingester
+#      build:
+#        context: ./file-ingester
+      # Mount your Apple Health export file into the container as read-only
+#      volumes:
+#        - ./data/export.zip:/data/export.zip:ro
+#      environment:
+#        - API_KEY=${WRITE_TOKEN}
+#        - EXPORT_FILE=/data/export.zip
+#        - API_URL=http://hae-server:3001/api/data
+#      depends_on:
+#        - hae-server
+#      networks:
+#        - hae_network
+#      restart: "no"
+
 networks:
   hae_network:
     driver: bridge
 
 volumes:
-  postgres-data:
   mongodb-data:
   grafana_data: {}
